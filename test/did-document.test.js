@@ -1,10 +1,15 @@
 // Tests for GET /.well-known/did.json — OB 3.0 issuer DID document route.
 //
-// NOTE: spawn(app) requires NODE_ENV=test, which makes
-// middleware.js#verifyRequest() bypass auth entirely (see its early return).
-// That means the auth EXEMPTION for /.well-known/ itself cannot be verified
-// here — only by code review of middleware.js and the manual curl in the
-// task-2 report (Step 4, run outside NODE_ENV=test).
+// These tests cover the route's own behavior (503 vs 200, did document
+// shape) via spawn(app), which requires NODE_ENV=test — under which
+// middleware.js#verifyRequest() bypasses auth entirely, so it can't exercise
+// the auth EXEMPTION itself. That exemption (no Authorization header still
+// gets through to this route) IS covered — see the "GET /.well-known/did.json,
+// should not 403 without auth" test in test/verify-request.test.js, which
+// sets NODE_ENV to a non-'test' value ('auth-test', matching spawn.js's
+// /test$/ requirement) so the real verifyRequest() logic runs. It's also
+// checked manually via curl outside NODE_ENV=test in the task-2 report
+// (Step 4).
 const test = require('tap').test
 const app = require('../')
 const spawn = require('./spawn')

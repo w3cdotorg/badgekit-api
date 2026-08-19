@@ -201,6 +201,21 @@ spawn(app).then(function (api) {
     })
   })
 
+  test('GET /.well-known/did.json, should not 403 without auth', function (t) {
+    http.get(api.makeUrl('/.well-known/did.json'), function (res) {
+      t.notSame(res.statusCode, 403, 'should not be blocked by auth')
+      // No ISSUER_DID / ISSUER_SIGNING_KEY are set in this process, so the
+      // route itself reports not-configured — the point of this test is
+      // only that verifyRequest() let the request through unauthenticated.
+      t.same(res.statusCode, 503, 'should get 503 (signing not configured in this test env)')
+      res.setEncoding('utf8')
+      res.pipe(concat(function (data) {
+        t.same(JSON.parse(data).code, 'SigningNotConfigured')
+        t.end()
+      }))
+    })
+  })
+
   test('GET the healthcheck endpoint', function (t) {
     http.get(api.makeUrl('/healthcheck'), function (res) {
       t.same(res.statusCode, 200)
