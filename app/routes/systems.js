@@ -62,7 +62,7 @@ exports = module.exports = function applySystemRoutes (server) {
   ]);
   function showOneSystem(req, res, next) {
     res.send({system: req.system.toResponse()})
-    return res.next()
+    return next()
   }
 
   server.del('/systems/:systemSlug', [

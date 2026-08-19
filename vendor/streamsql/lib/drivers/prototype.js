@@ -78,7 +78,13 @@ module.exports = {
             throw new RangeError('Condition for `'+key+'` cannot be undefined')
 
           const op = cnd.operation || cnd.op || '='
-          if (cnd.value) cnd = cnd.value
+          // use `in` rather than a truthiness check: {op:'IS NOT', value:null}
+          // is a valid condition object whose `value` is falsy, and dropping
+          // that branch serialized the whole condition object as the SQL
+          // literal instead of the intended NULL. Guard with typeof since
+          // cnd is often a plain string/number/boolean, and `in` throws on
+          // non-object operands.
+          if (typeof cnd === 'object' && 'value' in cnd) cnd = cnd.value
           return fmt('%s %s %s', field, op, escape(cnd))
         }
 
