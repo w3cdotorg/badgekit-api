@@ -156,7 +156,7 @@ spawn(app).then(function (api) {
           t.ok(match, 'should have a proper auth header')
 
           const tokenString = match[1]
-          t.ok(jws.verify(tokenString, secret), 'token should be verifiable')
+          t.ok(jws.verify(tokenString, 'HS256', secret), 'token should be verifiable')
 
           const token = jws.decode(tokenString)
           t.ok(token, 'token should be decodable')
@@ -183,7 +183,7 @@ spawn(app).then(function (api) {
               t.ok(match, 'should have a proper auth header')
 
               const tokenString = match[1]
-              t.ok(jws.verify(tokenString, secret), 'token should be verifiable')
+              t.ok(jws.verify(tokenString, 'HS256', secret), 'token should be verifiable')
 
               const token = jws.decode(tokenString)
               t.ok(token, 'token should be decodable')

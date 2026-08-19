@@ -93,9 +93,12 @@ const prefix = {
   program: '/systems/:systemSlug/issuers/:issuerSlug/programs/:programSlug',
 }
 const publicPrefix = {
-  system: '/public/' + prefix.system,
-  issuer: '/public/' + prefix.issuer,
-  program: '/public/' + prefix.program,
+  // `prefix.*` already starts with `/`, so don't add a second one here -
+  // the resulting double slash (`/public//systems/...`) never matches a
+  // sanitized incoming request path.
+  system: '/public' + prefix.system,
+  issuer: '/public' + prefix.issuer,
+  program: '/public' + prefix.program,
 }
 
 function instanceToHookData(badge, instance, comment) {
@@ -159,7 +162,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
         return ClaimCodes.put(code)
       })
       .then(saveBadgeInstance)
-      .error(function (err) {
+      .catch(function (err) {
         if (err.code !== 'CodeAlreadyUsed')
           return errorHandler(err)
       })
@@ -223,7 +226,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
             system: system
           }, 'Webhook not found for system')
         })
-        .error(function (err) {
+        .catch(function (err) {
           if (err.code === 'ER_DUP_ENTRY') {
             const query = {
               email: row.email,
@@ -242,7 +245,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
                 });
               })
 
-              .error(function (err) {
+              .catch(function (err) {
                 log.error(err, 'error fetching pre-existing badge instance');
                 return next(err);
               })
@@ -358,7 +361,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
             .catch(MissingWebhookError, function () {
               return;
             })
-            .error(function (err) {
+            .catch(function (err) {
               if (err.code !== 'ER_DUP_ENTRY') {
                 log.error(err, 'error dealing with webhooks when awarding badge')
                 return;
@@ -395,7 +398,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
       var responseData = {instances: rows.map(function (row) { return BadgeInstances.toResponse(row, req); })}
       return sendPaginated(req, res, responseData, total);
     })
-    .error(function (err) {
+    .catch(function (err) {
       log.error(err, 'error fetching badge instances');
       return next(err);
     });
@@ -446,7 +449,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
           return log.warn({code: 'WebhookBadResponse', status: res.statusCode, body: body})
       })
     })
-    .error(function (err) {
+    .catch(function (err) {
       log.error(err, 'error deleting badge instance');
       return next(err);
     });
@@ -516,7 +519,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
 
       var responseData = {instances: rows.map(function (row) { return BadgeInstances.toResponse(row, req); })}
       return sendPaginated(req, res, responseData, total);
-    }).error(function (err) {
+    }).catch(function (err) {
       if (!err.restCode)
         log.error(err, 'unknown error in getUserInstances route')
       return next(err)
@@ -544,7 +547,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
       const assertion = makeAssertion(instance, req)
       res.send(200, assertion)
       return next()
-    }).error(function (err) {
+    }).catch(function (err) {
       if (!err.restCode)
         log.error(err, 'unknown error in assertion route')
       return next(err)
