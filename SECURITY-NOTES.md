@@ -80,3 +80,23 @@ with a maintained MySQL client wrapper in a future pass.
   silently accepting a weak signing secret for master-key JWT auth. This
   only applies to `NODE_ENV=production`, so `test`/`development` flows
   (including the `tap` suite, which forces `NODE_ENV=test`) are unaffected.
+- `Dockerfile`: added `ENV NODE_ENV=production`. The fail-fast check above
+  is gated on `NODE_ENV === 'production'`, so it previously never actually
+  ran in a built image (Node defaults to no `NODE_ENV`, which is not the
+  string `'production'`) — the image now defaults into the hardened
+  posture instead of silently skipping the check. Deployments that
+  genuinely need dev/test behavior in a container (e.g. `badgekit-stack`'s
+  local `docker compose`) must explicitly override with
+  `NODE_ENV: development` — see that repo's `compose.yaml`.
+- `.dockerignore`: added `.env`, so a locally-populated `.env` file (which
+  may contain real secrets) is never baked into the built image via
+  `COPY . .`.
+- `app/models/image.js` / `app/routes/badge-instances.js`: fixed a
+  live-URL bug — `Image.toUrl()` returned `/images/<slug>` for BLOB-stored
+  images, but the actual served route is `/public/images/:imageId`, so
+  every uploaded (non-remote-URL) badge image produced a broken link.
+  `makeBadgeClass()` also computed an absolute `imageUrl` but then
+  returned the original unresolved relative one. Both are now fixed at
+  the source; see the git history for the exact diff and the new test
+  assertion in `test/badges.test.js` that pins the correct absolute
+  `/public/images/:imageId` URL for a BLOB-backed badge class image.
