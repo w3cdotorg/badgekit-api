@@ -12,6 +12,10 @@ const Milestones = require('../models/milestone')
 const errorHelper = require('../lib/error-helper')
 const middleware = require('../lib/middleware')
 const log = require('../lib/logger')
+const restifyErrors = require('restify-errors')
+const issuerKey = require('../lib/issuer-key')
+const ob3 = require('../lib/ob3')
+const ob3Signer = require('../lib/ob3-signer')
 const makeBadgeClassUrl = require('./utils').makeBadgeClassUrl
 const extend = require('xtend')
 const async = require('async')
@@ -108,6 +112,8 @@ function instanceToHookData(badge, instance, comment) {
     badge: badge.toResponse(),
     email: instance.email,
     assertionUrl: instance.assertionUrl,
+    // OB 3.0 (Task 7): additive, next to assertionUrl.
+    credentialUrl: instance.credentialUrl,
     issuedOn: unixtimeFromDate(instance.issuedOn),
     comment: comment
   }
@@ -570,6 +576,199 @@ exports = module.exports = function applyBadgeRoutes (server) {
       issuedOn: unixtimeFromDate(instance.issuedOn),
       expires: unixtimeFromDate(instance.expires),
     }
+  }
+
+  // OB 3.0 (Task 7): baseUrl for signed credentials — env `PUBLIC_BASE_URL`
+  // ONLY. This is deliberate and load-bearing, not a convenience default:
+  //
+  //   CRITICAL FIX (post-review): these two routes are auth-EXEMPT (see
+  //   app/lib/middleware.js#verifyRequest(), `/public/` prefix) and were
+  //   previously falling back to `req.resolvePath('/')`, which derives from
+  //   the client-controlled `Host`/`X-Forwarded-Host` header. The very FIRST
+  //   anonymous GET would pick whatever host it sent, and that host would be
+  //   signed into `credential.id` / `achievement.id` / `credentialStatus.*`
+  //   and PERSISTED FOREVER (lazy-sign-once). Any later GET — including from
+  //   the real intended host — would keep being served that first,
+  //   attacker-chosen, cryptographically-signed URL. There is no safe
+  //   request-derived fallback here: every URL baked into a signed document
+  //   must come from one operator-controlled, non-client-influenced value.
+  //
+  // Consequently: `PUBLIC_BASE_URL` is now MANDATORY whenever signing is
+  // configured (`issuerKey.isConfigured()`). If it's unset, these routes
+  // return the same 503 `SigningNotConfigured` shape used for a missing
+  // key/DID (still just "signing isn't fully configured yet"), naming
+  // `PUBLIC_BASE_URL` explicitly, rather than falling back to anything
+  // Host-derived. The dev/staging stack (badgekit-stack) is expected to set
+  // `PUBLIC_BASE_URL` alongside `ISSUER_SIGNING_KEY`/`ISSUER_DID`; there is no
+  // `.env.sample`/`.env.example` in this repo to also update (checked).
+  function getConfiguredBaseUrl() {
+    const configured = process.env.PUBLIC_BASE_URL
+    if (!configured) return null
+    return configured.replace(/\/+$/, '')
+  }
+
+  // ONE baseUrl value feeds every URL built for a signed credential — the
+  // credential id itself (ob3.buildCredential), the achievement/BadgeClass
+  // URL, and the achievement image URL. None of these may derive from
+  // `req` (see getConfiguredBaseUrl()'s comment above).
+  function resolveImageUrl(badge, baseUrl) {
+    if (!badge.image) return undefined
+    var imageUrl = badge.image.toUrl()
+    if (!/^http/.test(imageUrl))
+      imageUrl = baseUrl + imageUrl
+    return imageUrl
+  }
+
+  // Assembles the `badge` shape app/lib/ob3.js#buildCredential() expects.
+  // Deliberately NOT `req.resolvePath(makeBadgeClassUrl(badge))` (that's
+  // makeAssertion()'s job, for the 1.x, Host-derived-and-fine-because-
+  // unsigned assertion) — every field here is baseUrl-derived so the signed
+  // credential never bakes in a client-controlled host.
+  function makeBadgeForCredential(badge, baseUrl) {
+    return {
+      name: badge.name,
+      consumerDescription: badge.consumerDescription,
+      url: baseUrl + makeBadgeClassUrl(badge),
+      criteriaUrl: badge.criteriaUrl,
+      criteria: badge.criteria || [],
+      alignments: badge.alignments || [],
+      imageUrl: resolveImageUrl(badge, baseUrl),
+    }
+  }
+
+  const SIGNING_NOT_CONFIGURED = {
+    code: 'SigningNotConfigured',
+    message: 'ISSUER_SIGNING_KEY / ISSUER_DID not set',
+  }
+  const PUBLIC_BASE_URL_NOT_CONFIGURED = {
+    code: 'SigningNotConfigured',
+    message: 'PUBLIC_BASE_URL not set — required to sign credentials with a ' +
+      'stable, operator-controlled base URL (never derived from the ' +
+      'request Host header)',
+  }
+  const CREDENTIAL_CONTENT_TYPE = 'application/vc+ld+json'
+
+  // Shared gate for both credential routes: sends the 503 itself (still
+  // calling `next()`, matching every other route in this file) and returns
+  // `null` when signing isn't fully configured; returns the baseUrl string
+  // otherwise. Callers must check for `null` and stop.
+  function getSigningBaseUrlOrFail(res, next) {
+    if (!issuerKey.isConfigured()) {
+      res.send(503, SIGNING_NOT_CONFIGURED)
+      next()
+      return null
+    }
+    const baseUrl = getConfiguredBaseUrl()
+    if (!baseUrl) {
+      res.send(503, PUBLIC_BASE_URL_NOT_CONFIGURED)
+      next()
+      return null
+    }
+    return baseUrl
+  }
+
+  // Mirrors the wrapping pattern in app/index.js's `/.well-known/did.json`
+  // route (I6, post-review): these two routes are auth-EXEMPT, so an
+  // unexpected internal error must never reach the client as a raw
+  // `next(err)` — restify's default error renderer would serialize any
+  // plain Error as `{code:'Internal', message: String(err)}`, potentially
+  // leaking internal details (stack-adjacent messages, key-handling errors,
+  // etc.) to an unauthenticated caller. restify errors we raise ourselves on
+  // purpose (e.g. the 404 from errorHelper.notFound()) are passed through
+  // unchanged; anything else is logged and replaced with a generic wrapped
+  // error.
+  function failSafely(req, next, context) {
+    return function (err) {
+      if (err && err.restCode)
+        return next(err)
+      req.log.error(err, context)
+      return next(new restifyErrors.InternalServerError(context))
+    }
+  }
+
+  server.get('/public/credentials/status/0', getStatusListCredential)
+  function getStatusListCredential(req, res, next) {
+    const baseUrl = getSigningBaseUrlOrFail(res, next)
+    if (!baseUrl) return
+
+    ob3Signer.getStatusListCredential(baseUrl).then(function (signed) {
+      res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
+      res.end(JSON.stringify(signed))
+      return next()
+    }).catch(failSafely(req, next, 'Error building OB3 status list credential'))
+  }
+
+  // I3 (post-review): collapses concurrent first-GETs for the SAME instance
+  // within this process into a single sign, keyed by slug. Without this, two
+  // requests racing the `instance.credential === null` check would each
+  // independently build+sign (different `proof.created` timestamps ->
+  // different bytes) and `UPDATE` the row — a real byte-stability hazard.
+  // This alone only protects against in-process races; see the CAS + re-read
+  // below for the fully authoritative (cross-process-safe) guarantee.
+  const signingInFlight = {}
+
+  function signAndPersistCredential(instance, baseUrl) {
+    const key = instance.slug
+    if (signingInFlight[key]) return signingInFlight[key]
+
+    const promise = Badges.getOne({id: instance.badgeId}, {relationships: true}).then(function (badge) {
+      const issuerOrg = makeIssuerOrganization(badge.program, badge.issuer, badge.system)
+      const badgeForCredential = makeBadgeForCredential(badge, baseUrl)
+      const unsigned = ob3.buildCredential({
+        instance: instance,
+        badge: badgeForCredential,
+        issuerOrg: issuerOrg,
+        baseUrl: baseUrl,
+        issuerDid: issuerKey.getDid(),
+      })
+      return ob3Signer.signCredential(unsigned)
+    }).then(function (signed) {
+      const serialized = JSON.stringify(signed)
+      // Conditional/authoritative persistence (I3, post-review): the
+      // `credential: null` condition makes this a compare-and-swap — it only
+      // writes if the row is STILL unsigned, so if another request (in this
+      // process despite the in-flight map above, or in a different process
+      // entirely) already won the race, this `UPDATE` is a no-op rather than
+      // clobbering an already-served value (last-write-wins would otherwise
+      // let two already-served responses diverge from what ends up stored).
+      // Either way, we then ALWAYS re-read the row and serve exactly what is
+      // actually persisted now, not our own locally-computed `serialized` —
+      // this is what makes every racing caller converge on identical bytes.
+      return BadgeInstances.update({credential: serialized}, {id: instance.id, credential: null})
+        .then(function () { return BadgeInstances.getOne({id: instance.id}) })
+        .then(function (persisted) { return persisted.credential })
+    }).finally(function () {
+      delete signingInFlight[key]
+    })
+
+    signingInFlight[key] = promise
+    return promise
+  }
+
+  server.get('/public/credentials/:instanceSlug', getCredential)
+  function getCredential(req, res, next) {
+    const baseUrl = getSigningBaseUrlOrFail(res, next)
+    if (!baseUrl) return
+
+    const instanceSlug = req.params.instanceSlug
+    BadgeInstances.getOne({slug: instanceSlug}).then(function (instance) {
+      if (!instance)
+        return Promise.reject(errorHelper.notFound('Could not find badge instance'))
+
+      // Byte-stable persistence: once signed, ALWAYS serve the exact stored
+      // string back, verbatim — never re-serialize a parsed object (key
+      // order/whitespace could differ from run to run of JSON.stringify on a
+      // freshly-built object, even if logically equivalent).
+      if (instance.credential) return instance.credential
+
+      // Lazy sign: instances created before signing existed (or before this
+      // credential was ever requested) have `credential IS NULL`.
+      return signAndPersistCredential(instance, baseUrl)
+    }).then(function (serialized) {
+      res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
+      res.end(serialized)
+      return next()
+    }).catch(failSafely(req, next, 'Error building/serving OB3 credential'))
   }
 
   server.get(publicPrefix.system +'/badges/:badgeSlug',

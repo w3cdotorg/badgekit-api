@@ -93,6 +93,13 @@ function getDidDocument () {
   }).then(function (publicKey) {
     var did = getDid()
     return {
+      // INVARIANT: did/v1 MUST stay first in this array — app/lib/
+      // document-loader.js's network-freedom relies on jsonld-signatures'
+      // ControllerProofPurpose#validate() "mustFrame" optimization, which
+      // only skips jsonld.frame() (and so only avoids dereferencing this
+      // @context) when this array's first element is exactly did/v1. See
+      // that file's header comment and vendor/ob3/README.md for the
+      // reproduction proving this.
       '@context': [
         'https://www.w3.org/ns/did/v1',
         'https://w3id.org/security/multikey/v1',
