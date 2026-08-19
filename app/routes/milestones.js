@@ -1,5 +1,5 @@
 const Promise = require('bluebird')
-const restify = require('restify')
+const restifyErrors = require('restify-errors')
 const safeExtend = require('../lib/safe-extend')
 const Milestones = require('../models/milestone');
 const MilestoneBadges = require('../models/milestone-badge')
@@ -230,7 +230,7 @@ exports = module.exports = function applyBadgeRoutes(server) {
     Milestones.del(query, options)
       .then(function (result) {
         if (!result.affectedRows)
-          return res.send(404, new restify.NotFoundError('Could not find milestone with id ' + query.id));
+          return res.send(404, new restifyErrors.NotFoundError('Could not find milestone with id ' + query.id));
         return res.send(200, {
           status: 'deleted'
         });

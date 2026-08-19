@@ -4,7 +4,7 @@ module.exports = {
   notFound: notFound,
 }
 
-const restify = require('restify')
+const restifyErrors = require('restify-errors')
 
 function validationHelper(errors) {
   return {
@@ -15,7 +15,7 @@ function validationHelper(errors) {
 }
 
 function notFound(message) {
-  return new restify.ResourceNotFoundError(message)
+  return new restifyErrors.ResourceNotFoundError(message)
 }
 
 function makeDbHandler(modelName) {

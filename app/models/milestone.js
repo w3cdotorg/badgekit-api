@@ -60,12 +60,12 @@ Milestones.findEligible = function findEligible(user, recentBadge) {
         if (!relatedMilestoneBadges.length)
           throw new NoMilestonesError('No related milestones');
 
-        relatedMilestones = _.pluck(relatedMilestoneBadges, 'milestone');
+        relatedMilestones = _.map(relatedMilestoneBadges, 'milestone');
 
         return BadgeInstances.get({ email: user });
       })
       .then(function (userBadges) {
-        userBadgeIds = _.pluck(userBadges, 'badgeId');
+        userBadgeIds = _.map(userBadges, 'badgeId');
         unearnedMilestones = relatedMilestones.filter(function (m) {
           return userBadgeIds.indexOf(m.primaryBadgeId) == -1;
         });
@@ -73,7 +73,7 @@ Milestones.findEligible = function findEligible(user, recentBadge) {
         if (!unearnedMilestones.length)
           throw new NoUnearnedError('No unearned milestones');
 
-        const unearnedMilestoneIds = _.pluck(unearnedMilestones, 'id');
+        const unearnedMilestoneIds = _.map(unearnedMilestones, 'id');
         const query = { id: unearnedMilestoneIds };
         const options = { relationships: true };
 
@@ -82,7 +82,7 @@ Milestones.findEligible = function findEligible(user, recentBadge) {
 
       .then(function (unearnedMilestones) {
         const eligibleMilestones = unearnedMilestones.filter(function (m) {
-          const supportBadgeIds = _.pluck(m.supportBadges, 'id');
+          const supportBadgeIds = _.map(m.supportBadges, 'id');
           const earnedSupportBadges = _.intersection(supportBadgeIds, userBadgeIds);
           return earnedSupportBadges.length >= m.numberRequired;
         })

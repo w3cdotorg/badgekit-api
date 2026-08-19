@@ -1,11 +1,6 @@
 var habitat = require("habitat");
 habitat.load();
 
-// New Relic Server monitoring support
-if ( process.env.NEW_RELIC_ENABLED ) {
-  require( "newrelic" );
-}
-
 const restify = require('restify');
 const applyRoutes = require('./routes');
 const logger = require('./lib/logger')
@@ -18,10 +13,10 @@ const server = restify.createServer({
   log: logger,
 });
 
-server.pre(restify.pre.sanitizePath());
-server.use(restify.acceptParser(server.acceptable));
-server.use(restify.queryParser({mapParams: false}));
-server.use(restify.bodyParser({mapParams: false, rejectUnknown: true}));
+server.pre(restify.plugins.pre.sanitizePath());
+server.use(restify.plugins.acceptParser(server.acceptable));
+server.use(restify.plugins.queryParser({mapParams: false}));
+server.use(restify.plugins.bodyParser({mapParams: false, rejectUnknown: true}));
 server.use(middleware.verifyRequest())
 server.use(middleware.attachResolvePath())
 server.use(middleware.attachErrorLogger())
