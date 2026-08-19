@@ -1,0 +1,7 @@
+{
+  "name": "spdy",
+  "version": "4.0.2",
+  "description": "Stub replacing node-spdy, which is unmaintained and crashes on Node >= 23 (relies on the removed process.binding('http_parser')). restify only touches spdy when createServer() is passed a `spdy` option, which this project never does.",
+  "main": "index.js",
+  "license": "MIT"
+}

@@ -19,7 +19,7 @@ module.exports = {
 
 const jws = require('jws')
 const crypto = require('crypto')
-const restify = require('restify')
+const restifyErrors = require('restify-errors')
 const url = require('url')
 const log = require('../lib/logger')
 const hash = require('../lib/hash').hash
@@ -36,9 +36,9 @@ const models = {
   milestone: require('../models/milestone'),
 }
 
-const http403 = restify.NotAuthorizedError
-const http404 = restify.ResourceNotFoundError
-const http500 = restify.InternalError
+const http403 = restifyErrors.NotAuthorizedError
+const http404 = restifyErrors.ResourceNotFoundError
+const http500 = restifyErrors.InternalServerError
 
 function createFinder(modelName, gOpts) {
   return function findModel(opts) {
@@ -147,12 +147,23 @@ function verifyRequest() {
     if (!token)
       return next(new http403('Missing valid Authorization header'))
 
+    let parts
     try {
-      const parts = jws.decode(token) }
+      parts = jws.decode(token)
+    }
     catch (e) {
+      parts = null
+    }
+    if (!parts) {
       log.warn({code: 'JWTDecodeError', token: token}, 'Could not decode JWT')
       return next(new http403('Could not decode JWT'))
     }
+
+    // jws >= 3 requires an explicit algorithm; only accept HMAC to
+    // prevent algorithm-confusion attacks (e.g. alg: "none")
+    const alg = parts.header && parts.header.alg
+    if (!/^HS(256|384|512)$/.test(alg))
+      return next(new http403('Unsupported JWT algorithm: ' + alg))
 
     const auth = parts.payload
     if (!auth)
@@ -185,8 +196,9 @@ function verifyRequest() {
         return next(new http403('Missing JWT claim: body.hash'))
 
       const givenHash = auth.body.hash
+      let computedHash
       try {
-        const computedHash = hash(auth.body.alg, req._body)
+        computedHash = hash(auth.body.alg, req._body)
       } catch (e) {
         return next(new http403('Could not calculate hash, unsupported algorithm: '+auth.body.alg))
       }
@@ -199,7 +211,7 @@ function verifyRequest() {
 
     if (auth.key === 'master') {
       const masterSecret = process.env.MASTER_SECRET
-      if (!jws.verify(token, masterSecret))
+      if (!jws.verify(token, alg, masterSecret))
         return next(new http403('Invalid token signature'))
       return success()
     }
@@ -212,7 +224,7 @@ function verifyRequest() {
       if (!requestSystemSlug || consumer.system.slug !== requestSystemSlug)
         return next(new http403('Invalid token for system'))
 
-      if (!jws.verify(token, consumer.apiSecret))
+      if (!jws.verify(token, alg, consumer.apiSecret))
         return next(new http403('Invalid token signature'))
       return success()
     })

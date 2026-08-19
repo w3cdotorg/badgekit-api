@@ -43,6 +43,20 @@ function optional () {
   }
 }
 
+// validator >= 3 dropped the chainable `check()` API and renamed some
+// validators; map the legacy names used by the models onto the modern API
+const legacyValidators = {
+  len: function (value, min, max) {
+    return validatorContext.isLength(value, {min: min, max: max});
+  },
+  isUrl: function (value) {
+    return validatorContext.isURL(value, {require_tld: false});
+  },
+  is: function (value, pattern) {
+    return validatorContext.matches(value, pattern);
+  },
+}
+
 function confirmValidatorFunction (fn) {
   if (typeof fn === 'function')
     return fn;
@@ -51,8 +65,11 @@ function confirmValidatorFunction (fn) {
   var args = Array.prototype.slice.call(arguments, 1);
 
   return function (value) {
-    var checker = validatorContext.check(value);
-    checker[validator].apply(checker, args);
+    var checker = legacyValidators[validator] || validatorContext[validator];
+    if (typeof checker !== 'function')
+      throw new Error('Unknown validator: ' + validator);
+    if (!checker.apply(null, [String(value)].concat(args)))
+      throw new Error('Invalid value for `' + validator + '`');
   }
 }
 
