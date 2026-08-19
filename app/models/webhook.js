@@ -1,7 +1,6 @@
 const Promise = require('bluebird');
 const log = require('../lib/logger');
 const db = require('../lib/db');
-const request = require('request');
 const sha256 = require('../lib/hash').sha256;
 const jws = require('jws');
 
@@ -40,18 +39,30 @@ const Webhooks = db.table('webhooks', {
       };
 
       return new Promise(function (resolve, reject) {
-        request.post({
-          url: this.url,
-          body: hookDataString,
+        fetch(this.url, {
+          method: 'POST',
           headers: headers,
-        }, function (err, res, body) {
+          body: hookDataString,
+        }).then(function (fetchRes) {
+          return fetchRes.text().then(function (body) {
+            // Preserve the shape callers expect from the old `request`
+            // library, where `res.statusCode` is read directly.
+            const res = {
+              statusCode: fetchRes.status,
+              headers: fetchRes.headers,
+              ok: fetchRes.ok,
+            };
+
+            if (callback)
+              return callback(null, res, body);
+
+            return resolve({ res: res, body: body });
+          });
+        }).catch(function (err) {
           if (callback)
-            return callback(err, res, body);
+            return callback(err);
 
-          if (err)
-            return reject(err)
-
-          return resolve({ res: res, body: body });
+          return reject(err);
         });
       }.bind(this))
     }
