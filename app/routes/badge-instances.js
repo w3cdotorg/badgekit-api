@@ -593,7 +593,7 @@ exports = module.exports = function applyBadgeRoutes (server) {
     return {
       name: badge.name,
       description: badge.consumerDescription,
-      image: badge.image.toUrl(),
+      image: imageUrl,
       criteria: badge.criteriaUrl,
       alignment: badge.alignments.map(function(alignment) { return { name: alignment.name, url: alignment.url, description: alignment.description } }),
       issuer: req.resolvePath(publicIssuerUrl(badge)),

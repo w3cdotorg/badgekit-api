@@ -134,11 +134,21 @@ spawn(app).then(function (api) {
       t.same(badge.system.slug, 'chicago', 'system slug should be chicago')
       t.same(badge.issuer.slug, 'chicago-library', 'issuer slug should be chicago-library')
       t.same(badge.criteriaUrl, 'http://example.org/criteria', 'criteria url should be correct')
-      t.ok(badge.imageUrl.match(/\/images\/.+/), 'should have right image url')
+      t.ok(badge.imageUrl.match(/\/public\/images\/.+/), 'should have right image url')
 
       return api.get(res.headers.location)
     }).then(function (res) {
       t.same(res.body.badge, badge, 'should have the same data')
+      // BLOB-stored image: the public BadgeClass representation must
+      // resolve Image.toUrl()'s relative path to an absolute
+      // /public/images/:imageId URL (regression test for a bug where
+      // makeBadgeClass() computed the absolute imageUrl but then
+      // returned the original unresolved relative one).
+      return api.get('/public/systems/chicago/issuers/chicago-library/badges/' + badge.slug)
+    }).then(function (res) {
+      t.same(res.statusCode, 200, 'public badge class should be found')
+      t.ok(/^http/.test(res.body.image), 'BLOB image url should be absolute')
+      t.ok(/\/public\/images\/.+/.test(res.body.image), 'BLOB image url should use the real public/images route')
       t.end()
     }).catch(api.fail(t))
   })

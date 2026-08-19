@@ -21,7 +21,7 @@ const Images = db.table('images', {
       if (!this.slug)
         return null;
 
-      var path = '/images/' + this.slug.toString('ascii');
+      var path = '/public/images/' + this.slug.toString('ascii');
       if (request)
         path = request.resolvePath(path)
       return path
