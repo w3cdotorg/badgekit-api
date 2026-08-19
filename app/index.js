@@ -1,6 +1,14 @@
 var habitat = require("habitat");
 habitat.load();
 
+if (process.env.NODE_ENV === 'production') {
+  const weak = ['devsecret', 'dev-cookie-secret', 'dev-api-secret', 'blah', undefined, ''];
+  ['MASTER_SECRET'].forEach(function (name) {
+    if (weak.indexOf(process.env[name]) !== -1)
+      throw new Error(name + ' must be set to a strong value in production');
+  });
+}
+
 const restify = require('restify');
 const applyRoutes = require('./routes');
 const logger = require('./lib/logger')
