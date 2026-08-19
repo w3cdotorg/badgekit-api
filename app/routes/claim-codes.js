@@ -72,7 +72,7 @@ exports = module.exports = function applyClaimCodesRoutes (server) {
           badge: badge,
         })
       })
-      .error(req.error('Error inserting claim code'))
+      .catch(req.error('Error inserting claim code'))
   }
 
 
@@ -131,7 +131,7 @@ exports = module.exports = function applyClaimCodesRoutes (server) {
 
         sendPaginated(req, res, responseData, total);
       })
-      .error(req.error('Error getting claim code list'))
+      .catch(req.error('Error getting claim code list'))
   }
 
 
@@ -166,7 +166,7 @@ exports = module.exports = function applyClaimCodesRoutes (server) {
           badge: req.badge.toResponse(),
         })
       })
-      .error(req.error('Error updating claim code to claimed'))
+      .catch(req.error('Error updating claim code to claimed'))
   }
 
 
@@ -206,7 +206,7 @@ exports = module.exports = function applyClaimCodesRoutes (server) {
           badge: req.badge.toResponse(),
         })
       })
-      .error(req.error('Error deleting claim code'))
+      .catch(req.error('Error deleting claim code'))
   }
 
   server.get('/systems/:systemSlug/codes/:code', [
@@ -258,12 +258,12 @@ exports = module.exports = function applyClaimCodesRoutes (server) {
           badge.claimed = rows[0].claimed;
           res.send(200, { badge: badge });
         })
-        .error(req.error('Error finding badge from claim code'))
+        .catch(req.error('Error finding badge from claim code'))
       }
       else {
         next(errorHelper.notFound('Could not find the requested claim code ' + req.params.code));
       }
     })
-    .error(req.error('Error finding badge from claim code'))
+    .catch(req.error('Error finding badge from claim code'))
   }
 }
