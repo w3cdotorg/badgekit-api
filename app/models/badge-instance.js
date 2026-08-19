@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const dateFromUnixtime = require('../lib/date-from-unixtime')
 const db = require('../lib/db');
 const validation = require('../lib/validation')
@@ -16,6 +17,8 @@ const BadgeInstances = db.table('badgeInstances', {
     'expires',
     'claimCode',
     'badgeId',
+    'salt',
+    'credential',
   ],
   relationships: {
     badge: {
@@ -34,6 +37,7 @@ BadgeInstances.formatUserInput = function formatUserInput(obj) {
     issuedOn: obj.issuedOn || dateFromUnixtime(Date.now()),
     expires: obj.expires ? dateFromUnixtime(obj.expires) : null,
     claimCode: obj.claimCode,
+    salt: obj.salt || crypto.randomBytes(8).toString('hex'),
   }
 }
 
