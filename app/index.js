@@ -17,6 +17,7 @@ const restify = require('restify');
 const applyRoutes = require('./routes');
 const logger = require('./lib/logger')
 const middleware = require('./lib/middleware')
+const issuerKey = require('./lib/issuer-key')
 const package = require('../package')
 
 const server = restify.createServer({
@@ -33,6 +34,17 @@ server.use(middleware.verifyRequest())
 server.use(middleware.attachResolvePath())
 server.use(middleware.attachErrorLogger())
 server.use(middleware.attachPageData())
+
+server.get('/.well-known/did.json', function (req, res, next) {
+  if (!issuerKey.isConfigured()) {
+    res.send(503, {code: 'SigningNotConfigured', message: 'ISSUER_SIGNING_KEY / ISSUER_DID not set'})
+    return next()
+  }
+  issuerKey.getDidDocument().then(function (doc) {
+    res.send(200, doc)
+    return next()
+  }).catch(next)
+})
 
 applyRoutes(server);
 
