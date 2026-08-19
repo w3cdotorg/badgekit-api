@@ -139,6 +139,9 @@ function verifyRequest() {
     if (req.url.indexOf('/public/') === 0)
       return next()
 
+    if (req.url.indexOf('/.well-known/') === 0)
+      return next()
+
     if (req.url == '/' ||
         req.url == '/healthcheck')
       return next()

@@ -14,9 +14,11 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const restify = require('restify');
+const restifyErrors = require('restify-errors');
 const applyRoutes = require('./routes');
 const logger = require('./lib/logger')
 const middleware = require('./lib/middleware')
+const issuerKey = require('./lib/issuer-key')
 const package = require('../package')
 
 const server = restify.createServer({
@@ -33,6 +35,31 @@ server.use(middleware.verifyRequest())
 server.use(middleware.attachResolvePath())
 server.use(middleware.attachErrorLogger())
 server.use(middleware.attachPageData())
+
+server.get('/.well-known/did.json', function (req, res, next) {
+  if (!issuerKey.isConfigured()) {
+    res.send(503, {code: 'SigningNotConfigured', message: 'ISSUER_SIGNING_KEY / ISSUER_DID not set'})
+    return next()
+  }
+  issuerKey.getDidDocument().then(function (doc) {
+    res.send(200, doc)
+    return next()
+  }).catch(function (err) {
+    // req.error(message) (the codebase convention, see e.g.
+    // app/routes/claim-codes.js) logs at error level via
+    // req.log.error(error, message) and then forwards the *original* error
+    // to next() unchanged. For most routes that's fine because they sit
+    // behind auth — but restify's default error handler renders any
+    // non-restify Error as {code:'Internal', message: String(err)}, which
+    // would leak internal details (e.g. a key-decoding TypeError's message)
+    // straight into the response body. This route is intentionally
+    // auth-exempt, so an unauthenticated caller could see that. Log the raw
+    // error the same way req.error() would, but respond with a generic,
+    // wrapped restify error instead of the raw one.
+    req.log.error(err, 'Error building DID document')
+    return next(new restifyErrors.InternalServerError('Error building DID document'))
+  })
+})
 
 applyRoutes(server);
 
