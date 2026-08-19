@@ -6,6 +6,7 @@ const sha256 = require('../app/lib/hash').sha256
 const app = require('../')
 const spawn = require('./spawn')
 const startWebhookServer = require('./test-webhook-server')
+const BadgeInstances = require('../app/models/badge-instance')
 
 spawn(app).then(function (api) {
   test('creating a new badge instance', function (t) {
@@ -26,7 +27,11 @@ spawn(app).then(function (api) {
       const assertionUrl = res.headers.location
       t.same(res.statusCode, 201, 'should get created')
       t.ok(/^\/public\/assertions\/[0-9a-f]+$/.test(assertionUrl), 'correct location format')
-      return api.get(assertionUrl)
+      return BadgeInstances.getOne({email: email})
+    }).then(function (instance) {
+      t.ok(/^[0-9a-f]{16}$/.test(instance.salt), 'should have a 16-char hex salt')
+      t.same(instance.credential, null, 'credential should be null until signed')
+      return api.get('/public/assertions/' + instance.slug)
     }).then(function(res) {
       t.same(res.statusCode, 200, 'should be found')
 

@@ -277,7 +277,8 @@ INSERT INTO `reviewItems` SET
 INSERT INTO `badgeInstances` SET
   `slug` = 'whatevs',
   `email` = 'brian+milestone-test@example.org',
-  `badgeId` = 5;
+  `badgeId` = 5,
+  `salt` = 'aaaaaaaaaaaaaaaa';
 
 INSERT INTO `milestones` SET
   `id` = 1,
