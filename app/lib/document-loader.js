@@ -9,29 +9,46 @@
 // — see node_modules/jsonld-signatures/lib/documentLoader.js#extendContextLoader.
 //
 // Verified empirically against a real @digitalbazaar/vc issue()/
-// verifyCredential() round trip (task-6-report.md) that:
+// verifyCredential() round trip (task-6-report.md) that the DID/security
+// contexts (https://www.w3.org/ns/did/v1, https://w3id.org/security/
+// multikey/v1) referenced by the did document's own `@context` are NEVER
+// requested by that flow — for TWO SEPARATE reasons, one per resolved URL:
 //
-//   - The DID/security contexts (https://www.w3.org/ns/did/v1,
-//     https://w3id.org/security/multikey/v1) referenced by the did
-//     document's own `@context` are NEVER requested by that flow — the did
-//     document and the verificationMethod object are consumed directly by
-//     @digitalbazaar/data-integrity and @digitalbazaar/ed25519-multikey,
-//     with no jsonld expansion of their own `@context`. They are
-//     intentionally NOT vendored here.
+//   (a) `ISSUER_DID#key-0` (the verificationMethod URL dereferenced during
+//       proof verification, see DataIntegrityProof#getVerificationMethod)
+//       must resolve to the verificationMethod object itself (the individual
+//       Multikey), NOT the full did document. @digitalbazaar/ed25519-multikey's
+//       from() (used by eddsa-rdfc-2022-cryptosuite's createVerifier())
+//       requires a top-level `publicKeyMultibase`, which only the
+//       verificationMethod object has — resolving to the full did document
+//       there fails verification with "publicKeyMultibase property is
+//       required". The object is consumed as-is, with no jsonld expansion
+//       of its own `@context`, so its context is never dereferenced either.
 //
-//   - `ISSUER_DID#key-0` (the verificationMethod URL dereferenced during
-//     proof verification, see DataIntegrityProof#getVerificationMethod)
-//     must resolve to the verificationMethod object itself (the individual
-//     Multikey), NOT the full did document. @digitalbazaar/ed25519-multikey's
-//     from() (used by eddsa-rdfc-2022-cryptosuite's createVerifier())
-//     requires a top-level `publicKeyMultibase`, which only the
-//     verificationMethod object has — resolving to the full did document
-//     there fails verification with "publicKeyMultibase property is
-//     required".
+//   (b) the bare `ISSUER_DID` (the controller document) IS requested too —
+//       separately from #key-0 — because ControllerProofPurpose#validate()
+//       (jsonld-signatures) checks that the verificationMethod is listed in
+//       the controller document's `assertionMethod`. It gets the full did
+//       document from the loader and normally has to run jsonld.frame() on
+//       it to read that term reliably — BUT it skips framing (its `mustFrame`
+//       optimization, node_modules/jsonld-signatures/lib/purposes/
+//       ControllerProofPurpose.js) when the term being checked is one of the
+//       DID verification-relationship terms AND the document's `@context` is
+//       either exactly `https://www.w3.org/ns/did/v1` or an ARRAY WHOSE
+//       FIRST ELEMENT is that URL. `assertionMethod` is one of those terms,
+//       and issuer-key.js#getDidDocument() puts did/v1 first in its
+//       `@context` array, so framing is skipped and neither did/v1 nor
+//       multikey/v1 is ever dereferenced.
 //
-//   - The bare `ISSUER_DID` IS requested too (separately from #key-0),
-//     because AssertionProofPurpose validates that the verificationMethod
-//     is listed in the controller document's `assertionMethod`.
+//   INVARIANT: this loader's network-freedom for the bare-DID path depends
+//   on issuer-key.js#getDidDocument() keeping `https://www.w3.org/ns/did/v1`
+//   as the FIRST element of its `@context` array. Verified by reproduction:
+//   reordering that array (multikey/v1 first) makes ControllerProofPurpose
+//   run jsonld.frame(), which requests `https://w3id.org/security/
+//   multikey/v1` through this loader and fails verification (this loader
+//   rejects it, since it isn't vendored). If that document shape ever
+//   changes, either restore did/v1-first, or vendor both DID/security
+//   contexts here and stop rejecting them.
 
 const fs = require('fs')
 const path = require('path')
