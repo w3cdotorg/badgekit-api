@@ -57,6 +57,34 @@ spawn(app).then(function (api) {
     })
   })
 
+  // F1 (final whole-plan review): a real DID resolver sends
+  // `Accept: application/did+json` per the did:web method spec. Before this
+  // fix, restify's acceptParser 406'd that request before routing even
+  // happened (app/index.js only registered application/vc+ld+json and
+  // application/ld+json as acceptable formatters). Uses a raw http.get
+  // (like test/ob3-credentials.test.js's rawGet) rather than spawn.js's
+  // requester, so we can set an arbitrary Accept header and inspect the raw
+  // Content-Type header instead of a JSON.parse'd body.
+  test('did-document: F1 — Accept: application/did+json is acceptable, not a 406, and Content-Type matches', function (t) {
+    var did = process.env.ISSUER_DID // still set from the previous test
+    var http = require('http')
+
+    http.get(api.makeUrl('/.well-known/did.json'), { headers: { Accept: 'application/did+json' } }, function (res) {
+      var chunks = []
+      res.on('data', function (chunk) { chunks.push(chunk) })
+      res.on('end', function () {
+        t.same(res.statusCode, 200, 'not a 406 — application/did+json is acceptable')
+        t.match(res.headers['content-type'], /^application\/did\+json/, 'Content-Type is application/did+json')
+        var doc = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        t.same(doc.id, did, 'still serves the right did document body')
+        t.end()
+      })
+    }).on('error', function (err) {
+      t.fail('Error: ' + err.message)
+      t.end()
+    })
+  })
+
   test(':cleanup:', function (t) {
     delete process.env.ISSUER_SIGNING_KEY
     delete process.env.ISSUER_DID

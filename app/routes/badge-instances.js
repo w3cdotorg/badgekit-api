@@ -648,10 +648,35 @@ exports = module.exports = function applyBadgeRoutes (server) {
   }
   const CREDENTIAL_CONTENT_TYPE = 'application/vc+ld+json'
 
+  // F3 (final whole-plan review): builds the "ISSUER_DID and PUBLIC_BASE_URL
+  // disagree" 503 body. Names both configured values so an operator staring
+  // at this response (or a log line) can immediately see which one is wrong,
+  // rather than having to go re-derive the mismatch themselves.
+  function makeCoherenceMismatchError(baseUrl, baseUrlHost, didHost) {
+    return {
+      code: 'SigningNotConfigured',
+      message: 'ISSUER_DID (' + issuerKey.getDid() + ', host `' + didHost + '`) does not ' +
+        'agree with PUBLIC_BASE_URL (' + baseUrl + ', host `' + baseUrlHost + '`) — ' +
+        'these must name the same host[:port], or credentials get signed whose ' +
+        'issuer identity and content host silently, permanently diverge. Set ' +
+        'ISSUER_DID and PUBLIC_BASE_URL together (see docs/ob3-operations.md ' +
+        'in badgekit-stack for the domain-move runbook).',
+    }
+  }
+
   // Shared gate for both credential routes: sends the 503 itself (still
   // calling `next()`, matching every other route in this file) and returns
   // `null` when signing isn't fully configured; returns the baseUrl string
   // otherwise. Callers must check for `null` and stop.
+  //
+  // F3 (final whole-plan review): beyond "is a key/DID/base URL configured
+  // at all", this now also enforces that they're COHERENT with each other —
+  // the did:web host encoded in ISSUER_DID must equal the host[:port] of
+  // PUBLIC_BASE_URL. Without this, a misconfiguration (e.g. ISSUER_DID left
+  // pointing at an old domain after PUBLIC_BASE_URL was updated, or vice
+  // versa) would silently sign credentials whose `issuer.id` host and
+  // `id`/`achievement.id` host disagree — permanently, since credentials are
+  // immutable once issued.
   function getSigningBaseUrlOrFail(res, next) {
     if (!issuerKey.isConfigured()) {
       res.send(503, SIGNING_NOT_CONFIGURED)
@@ -661,6 +686,18 @@ exports = module.exports = function applyBadgeRoutes (server) {
     const baseUrl = getConfiguredBaseUrl()
     if (!baseUrl) {
       res.send(503, PUBLIC_BASE_URL_NOT_CONFIGURED)
+      next()
+      return null
+    }
+    const didHost = issuerKey.getDidHost()
+    var baseUrlHost
+    try {
+      baseUrlHost = new URL(baseUrl).host
+    } catch (e) {
+      baseUrlHost = null
+    }
+    if (!didHost || !baseUrlHost || didHost !== baseUrlHost) {
+      res.send(503, makeCoherenceMismatchError(baseUrl, baseUrlHost, didHost))
       next()
       return null
     }
@@ -686,12 +723,49 @@ exports = module.exports = function applyBadgeRoutes (server) {
     }
   }
 
-  server.get('/public/credentials/status/0', getStatusListCredential)
+  // F3 (final whole-plan review): logs (never blocks/rewrites — byte-
+  // stability wins) when a STORED credential's `id` doesn't start with the
+  // currently-configured baseUrl. Parses the stored string only to peek at
+  // `.id` for this check; the exact stored string is still what gets served.
+  // Swallows a parse failure silently — an unparseable stored credential is
+  // an existing-data problem this check isn't meant to surface twice over
+  // (the byte-stable serve path below doesn't parse it at all).
+  function warnIfCredentialIdIsStale(req, instance, baseUrl) {
+    var parsed
+    try {
+      parsed = JSON.parse(instance.credential)
+    } catch (e) {
+      return
+    }
+    if (parsed && typeof parsed.id === 'string' && parsed.id.indexOf(baseUrl) !== 0) {
+      req.log.warn(
+        {instanceSlug: instance.slug, credentialId: parsed.id, currentBaseUrl: baseUrl},
+        'Serving a stored OB3 credential whose id does not start with the ' +
+        'current PUBLIC_BASE_URL — likely signed before a domain move; ' +
+        'serving it verbatim (byte-stability), not re-signing it.'
+      )
+    }
+  }
+
+  // F2 (final whole-plan review): the status list is fixed-size (131,072
+  // entries, global-constraints.md); sharded per app/lib/ob3.js so instance
+  // ids beyond the ceiling get a NEW list rather than an out-of-range,
+  // silently-wrong bit index signed into an immutable credential. `:shard`
+  // must be a canonical non-negative integer (no leading zeros, no sign) —
+  // anything else 404s rather than reaching the signing gate, since it can
+  // never correspond to a real shard regardless of configuration.
+  const SHARD_PARAM_PATTERN = /^(0|[1-9]\d*)$/
+  server.get('/public/credentials/status/:shard', getStatusListCredential)
   function getStatusListCredential(req, res, next) {
+    const shardParam = req.params.shard
+    if (!SHARD_PARAM_PATTERN.test(shardParam))
+      return next(errorHelper.notFound('Invalid status list shard: ' + shardParam))
+    const shard = parseInt(shardParam, 10)
+
     const baseUrl = getSigningBaseUrlOrFail(res, next)
     if (!baseUrl) return
 
-    ob3Signer.getStatusListCredential(baseUrl).then(function (signed) {
+    ob3Signer.getStatusListCredential(baseUrl, shard).then(function (signed) {
       res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
       res.end(JSON.stringify(signed))
       return next()
@@ -759,7 +833,19 @@ exports = module.exports = function applyBadgeRoutes (server) {
       // string back, verbatim — never re-serialize a parsed object (key
       // order/whitespace could differ from run to run of JSON.stringify on a
       // freshly-built object, even if logically equivalent).
-      if (instance.credential) return instance.credential
+      //
+      // F3 (final whole-plan review): a stored credential's `id` was baked in
+      // with WHATEVER `PUBLIC_BASE_URL` was configured at sign time. If the
+      // operator later moves domains (new PUBLIC_BASE_URL/ISSUER_DID pair),
+      // any credential signed under the old base URL still has the old host
+      // in its `id` — and byte-stability means we deliberately keep serving
+      // it verbatim rather than silently rewrite an already-issued,
+      // (potentially externally-recorded) credential. Still worth a log line
+      // so this doesn't go unnoticed operationally.
+      if (instance.credential) {
+        warnIfCredentialIdIsStale(req, instance, baseUrl)
+        return instance.credential
+      }
 
       // Lazy sign: instances created before signing existed (or before this
       // credential was ever requested) have `credential IS NULL`.

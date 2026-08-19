@@ -64,6 +64,20 @@ const CONTEXT = [
 const OFFICIAL_SCHEMA_URL =
   'https://purl.imsglobal.org/spec/ob/v3p0/schema/json/ob_v3p0_achievementcredential_schema.json'
 
+// F2 (final whole-plan review): global-constraints.md fixes the status list
+// at exactly 131,072 entries (16 KiB decompressed bitstring, the spec
+// minimum size) — a single fixed-size list. `instance.id` is an
+// auto-increment PK with no ceiling, so pinning `statusListIndex =
+// String(instance.id)` against that one list (as this builder used to do)
+// would silently sign an out-of-range bit index into an IMMUTABLE, already-
+// issued credential once `instance.id >= STATUS_LIST_SIZE`. Fixed by
+// SHARDING: every STATUS_LIST_SIZE instance ids share one status list
+// credential (`/public/credentials/status/<shard>`), and the index within
+// that shard's bitstring is `instance.id % STATUS_LIST_SIZE`. For every
+// instance created before the ceiling is ever reached (shard 0), this is
+// byte-for-byte identical to the old behavior.
+const STATUS_LIST_SIZE = 131072
+
 function buildCredential (params) {
   const instance = params.instance
   const badge = params.badge
@@ -91,6 +105,10 @@ function buildCredential (params) {
   }
   if (badge.imageUrl) achievement.image = { id: badge.imageUrl, type: 'Image' }
 
+  const statusListShard = Math.floor(instance.id / STATUS_LIST_SIZE)
+  const statusListIndex = instance.id % STATUS_LIST_SIZE
+  const statusListCredentialUrl = baseUrl + '/public/credentials/status/' + statusListShard
+
   const credential = {
     '@context': CONTEXT.slice(),
     id: baseUrl + '/public/credentials/' + instance.slug,
@@ -111,11 +129,11 @@ function buildCredential (params) {
       achievement: achievement,
     },
     credentialStatus: {
-      id: baseUrl + '/public/credentials/status/0#' + instance.id,
+      id: statusListCredentialUrl + '#' + instance.id,
       type: 'BitstringStatusListEntry',
       statusPurpose: 'revocation',
-      statusListIndex: String(instance.id),
-      statusListCredential: baseUrl + '/public/credentials/status/0',
+      statusListIndex: String(statusListIndex),
+      statusListCredential: statusListCredentialUrl,
     },
     credentialSchema: [{
       id: OFFICIAL_SCHEMA_URL,

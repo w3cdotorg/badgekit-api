@@ -192,8 +192,14 @@ function toIso8601Now () {
 // vendor/ob3/credentials-v2.jsonld); adding the OB 3.0 context here would be
 // both unnecessary and contrary to global-constraints.md's fixed @context
 // ordering for the OpenBadgeCredential itself (this document is not one).
-function buildStatusListCredential (baseUrl) {
-  const id = baseUrl + '/public/credentials/status/0'
+//
+// F2 (final whole-plan review): `shard` (a non-negative integer, matching
+// app/lib/ob3.js's `Math.floor(instance.id / 131072)`) selects WHICH status
+// list credential this is — `/public/credentials/status/<shard>` — now that
+// the single fixed-size list is sharded across instance-id ranges instead of
+// pinned at `/status/0` forever.
+function buildStatusListCredential (baseUrl, shard) {
+  const id = baseUrl + '/public/credentials/status/' + shard
   return {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     id: id,
@@ -209,27 +215,31 @@ function buildStatusListCredential (baseUrl) {
   }
 }
 
-// getStatusListCredential(baseUrl) -> Promise<signed>
-// Built and signed once per process PER baseUrl, then memoized — keyed by
-// baseUrl (not a single slot) because the credential's own `id` and its
-// `credentialSubject.id` are derived from baseUrl; a bare single-slot memo
-// would silently keep serving a credential whose `id`/`statusListCredential`
-// pairing (which strict verifiers check for equality — spec's Bitstring
-// Status List retrieval algorithm) belongs to a stale baseUrl. In practice
-// baseUrl is now always exactly `PUBLIC_BASE_URL` (see
-// app/routes/badge-instances.js — required whenever signing is configured),
-// so this Map holds at most one entry in real deployments; it stays
-// baseUrl-keyed anyway so a misconfiguration can't wire up cross-baseUrl
-// contamination silently, and so tests that vary baseUrl per spawn() get
-// correctly independent, non-stale credentials.
+// getStatusListCredential(baseUrl, shard) -> Promise<signed>
+// Built and signed once per process PER (baseUrl, shard) pair, then
+// memoized — keyed by both (not a single slot, and not baseUrl alone)
+// because the credential's own `id` and its `credentialSubject.id` are
+// derived from baseUrl + shard; a memo that ignored either would silently
+// keep serving a credential whose `id`/`statusListCredential` pairing (which
+// strict verifiers check for equality — spec's Bitstring Status List
+// retrieval algorithm) belongs to a stale baseUrl or the WRONG shard (F2,
+// final whole-plan review — the status list is now sharded across
+// instance-id ranges rather than pinned at a single `/status/0`). In
+// practice baseUrl is always exactly `PUBLIC_BASE_URL` (see
+// app/routes/badge-instances.js — required whenever signing is configured)
+// and most deployments never exceed shard 0, so this Map holds very few
+// entries in real deployments; it stays fully keyed anyway so neither a
+// misconfiguration nor normal shard growth can wire up cross-baseUrl or
+// cross-shard contamination silently.
 const statusListCredentialPromises = new Map()
-function getStatusListCredential (baseUrl) {
-  if (!statusListCredentialPromises.has(baseUrl)) {
-    const promise = signCredential(buildStatusListCredential(baseUrl))
-    promise.catch(function () { statusListCredentialPromises.delete(baseUrl) })
-    statusListCredentialPromises.set(baseUrl, promise)
+function getStatusListCredential (baseUrl, shard) {
+  const key = baseUrl + '|' + shard
+  if (!statusListCredentialPromises.has(key)) {
+    const promise = signCredential(buildStatusListCredential(baseUrl, shard))
+    promise.catch(function () { statusListCredentialPromises.delete(key) })
+    statusListCredentialPromises.set(key, promise)
   }
-  return statusListCredentialPromises.get(baseUrl)
+  return statusListCredentialPromises.get(key)
 }
 
 module.exports = {
