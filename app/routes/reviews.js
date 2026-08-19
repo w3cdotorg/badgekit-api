@@ -235,7 +235,7 @@ function putReview (row, application, reviewItems, criteria, systemId, callback)
         return log.error(err, 'error dealing with webhooks when adding review')
 
       if (!hook)
-        return log.info({code: 'WebhookNotFound', system: system}, 'Webhook not found for system')
+        return log.info({code: 'WebhookNotFound', system: systemId}, 'Webhook not found for system')
 
       var hookData = {
         action: 'review',
