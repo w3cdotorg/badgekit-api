@@ -181,4 +181,9 @@ function toIso8601 (dateOrUnixtime) {
 
 module.exports = {
   buildCredential: buildCredential,
+  // Exported so callers that need to reason about shards without building a
+  // full credential (e.g. app/routes/badge-instances.js's status-list route,
+  // bounding requested shards against real data — final-review fix) share
+  // this ONE constant rather than duplicating the magic number.
+  STATUS_LIST_SIZE: STATUS_LIST_SIZE,
 }

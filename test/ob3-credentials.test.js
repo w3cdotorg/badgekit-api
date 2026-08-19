@@ -319,35 +319,6 @@ spawn(app).then(function (api) {
     }).catch(t.threw)
   })
 
-  // F2 (final whole-plan review): shard 1 is a DIFFERENT status list
-  // credential — different `id`, different `credentialSubject.id`,
-  // independently memoized (keyed by (baseUrl, shard), not baseUrl alone —
-  // see app/lib/ob3-signer.js). No real instance ever lands in shard 1 in
-  // this test file (ids stay tiny), but the route itself must still serve
-  // any structurally-valid shard.
-  test('ob3-credentials: GET /public/credentials/status/1 — a DIFFERENT shard, independently signed and memoized', function (t) {
-    const shard0Url = api.makeUrl('/public/credentials/status/0')
-    const shard1Url = api.makeUrl('/public/credentials/status/1')
-
-    Promise.all([rawGet(shard0Url), rawGet(shard1Url)]).then(function (results) {
-      const shard0 = JSON.parse(results[0].body)
-      const shard1 = JSON.parse(results[1].body)
-      t.same(results[1].statusCode, 200, 'shard 1 is servable')
-      t.same(shard1.id, PUBLIC_BASE_URL + '/public/credentials/status/1', 'shard 1 has its own id')
-      t.same(shard1.credentialSubject.id, PUBLIC_BASE_URL + '/public/credentials/status/1#list')
-      t.notSame(shard1.id, shard0.id, 'shard 1 is not the same document as shard 0')
-      t.notSame(shard1.proof.proofValue, shard0.proof.proofValue, 'independently signed — different proof bytes')
-
-      // Re-fetch to confirm shard 1 is itself memoized independently.
-      return rawGet(shard1Url).then(function (a) {
-        return rawGet(shard1Url).then(function (b) {
-          t.same(a.body, b.body, 'shard 1 is memoized — repeat GETs are byte-identical')
-          t.end()
-        })
-      })
-    }).catch(t.threw)
-  })
-
   // F2 (final whole-plan review): the shard route parameter must be a
   // canonical non-negative integer. Anything else (non-numeric, negative,
   // leading zeros) can never correspond to a real shard, so it 404s — this
@@ -363,6 +334,31 @@ spawn(app).then(function (api) {
       results.forEach(function (res, i) {
         t.same(res.statusCode, 404, 'invalid shard #' + i + ' -> 404')
       })
+      t.end()
+    }).catch(api.fail(t))
+  })
+
+  // Post-final-review fix: a WELL-FORMED shard (passes SHARD_PARAM_PATTERN)
+  // must still 404 once it's beyond what real data could ever justify —
+  // otherwise any anonymous caller could force an unbounded number of fresh
+  // Ed25519 signs and forever-retained ob3-signer.js Map entries just by
+  // incrementing a URL segment (no auth required on /public/ routes at all).
+  // This test file's fixture ids are all tiny, so maxShard is 0 throughout —
+  // shard 1 is a well-formed but nonexistent shard here, and must 404 both
+  // times it's requested (not sign-then-serve on some later attempt, and
+  // not fail once then succeed from a stale memo).
+  test('ob3-credentials: F2 (post-review) — a well-formed shard beyond real data 404s, every time, never signs', function (t) {
+    const beyondUrl = api.makeUrl('/public/credentials/status/1')
+
+    api.get('/public/credentials/status/1').then(function (first) {
+      t.same(first.statusCode, 404, 'shard 1 is well-formed but no instance id justifies it yet -> 404')
+      return rawGet(beyondUrl)
+    }).then(function (second) {
+      t.same(second.statusCode, 404, 'requesting it again still 404s — no memo entry was created for it')
+      // Shard 0 must remain unaffected by an out-of-bounds sibling request.
+      return api.get('/public/credentials/status/0')
+    }).then(function (stillFine) {
+      t.same(stillFine.statusCode, 200, 'shard 0 (the only shard real data justifies) is still servable')
       t.end()
     }).catch(api.fail(t))
   })

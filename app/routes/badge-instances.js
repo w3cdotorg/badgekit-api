@@ -755,6 +755,31 @@ exports = module.exports = function applyBadgeRoutes (server) {
   // anything else 404s rather than reaching the signing gate, since it can
   // never correspond to a real shard regardless of configuration.
   const SHARD_PARAM_PATTERN = /^(0|[1-9]\d*)$/
+
+  // Post-final-review fix: the format check above only rejects
+  // non-numeric/malformed shards — it does NOT bound how large a
+  // well-formed one can be. Without a bound, this route (auth-EXEMPT, like
+  // every /public/ route) would let any anonymous caller force a fresh
+  // Ed25519 signing operation AND a forever-retained entry in
+  // ob3-signer.js's in-memory memoization Map for an arbitrarily large
+  // shard number (e.g. /public/credentials/status/999999999999) — unbounded
+  // CPU + memory growth driven entirely by unauthenticated request URLs.
+  // Bounds the requested shard against the shard that could ACTUALLY exist
+  // given real data: maxShard = floor(MAX(badgeInstances.id) /
+  // STATUS_LIST_SIZE). Anything beyond that 404s the same way a malformed
+  // shard does — same errorHelper.notFound(), same status code — since it
+  // can't correspond to anything sign-worthy yet either. Shard 0 is always
+  // <= maxShard (an empty table's MAX(id) is NULL -> maxId 0 -> maxShard 0),
+  // so an empty/low-id table never blocks the one shard that's always
+  // meaningful. Not cached: one indexed MAX(id) query per status-list
+  // request is cheap at this scale, and it only runs after the (free)
+  // format check and signing-gate check above have already passed.
+  function getMaxAllowedShard() {
+    return BadgeInstances.getMaxId().then(function (maxId) {
+      return Math.floor((maxId || 0) / ob3.STATUS_LIST_SIZE)
+    })
+  }
+
   server.get('/public/credentials/status/:shard', getStatusListCredential)
   function getStatusListCredential(req, res, next) {
     const shardParam = req.params.shard
@@ -765,7 +790,12 @@ exports = module.exports = function applyBadgeRoutes (server) {
     const baseUrl = getSigningBaseUrlOrFail(res, next)
     if (!baseUrl) return
 
-    ob3Signer.getStatusListCredential(baseUrl, shard).then(function (signed) {
+    getMaxAllowedShard().then(function (maxShard) {
+      if (shard > maxShard)
+        return Promise.reject(errorHelper.notFound(
+          'Status list shard ' + shard + ' does not exist yet (max is ' + maxShard + ')'))
+      return ob3Signer.getStatusListCredential(baseUrl, shard)
+    }).then(function (signed) {
       res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
       res.end(JSON.stringify(signed))
       return next()
