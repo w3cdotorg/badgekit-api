@@ -49,8 +49,13 @@ const legacyValidators = {
   len: function (value, min, max) {
     return validatorContext.isLength(value, {min: min, max: max});
   },
+  // validator@2 (what this app was built against) always required a
+  // scheme (http/https/ftp) - it had no `require_protocol` option to
+  // disable that. validator@13 defaults `require_protocol` to false, so
+  // a bare hostname like "ridiculous-url" now passes as "valid". Keep
+  // requiring a protocol to preserve the original strictness.
   isUrl: function (value) {
-    return validatorContext.isURL(value, {require_tld: false});
+    return validatorContext.isURL(value, {require_tld: false, require_protocol: true});
   },
   is: function (value, pattern) {
     return validatorContext.matches(value, pattern);
