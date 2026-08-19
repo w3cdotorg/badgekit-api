@@ -44,6 +44,12 @@ BadgeInstances.formatUserInput = function formatUserInput(obj) {
 BadgeInstances.toResponse = function toResponse(row, req) {
   const relativeAssertionUrl = '/public/assertions/' + row.slug;
   const assertionUrl = req.resolvePath(relativeAssertionUrl);
+  // OB 3.0 (Task 7): additive, next to assertionUrl — the 1.x assertion
+  // stays the `Location`/primary artifact, this just points at the signed
+  // OpenBadgeCredential (lazily signed on first GET, see
+  // app/routes/badge-instances.js).
+  const relativeCredentialUrl = '/public/credentials/' + row.slug;
+  const credentialUrl = req.resolvePath(relativeCredentialUrl);
 
   return {
     slug: row.slug,
@@ -52,6 +58,7 @@ BadgeInstances.toResponse = function toResponse(row, req) {
     issuedOn: row.issuedOn,
     claimCode: row.claimCode,
     assertionUrl: assertionUrl,
+    credentialUrl: credentialUrl,
     badge: row.badge ? row.badge.toResponse(req) : null
   }
 };

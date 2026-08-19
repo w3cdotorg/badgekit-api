@@ -12,6 +12,9 @@ const Milestones = require('../models/milestone')
 const errorHelper = require('../lib/error-helper')
 const middleware = require('../lib/middleware')
 const log = require('../lib/logger')
+const issuerKey = require('../lib/issuer-key')
+const ob3 = require('../lib/ob3')
+const ob3Signer = require('../lib/ob3-signer')
 const makeBadgeClassUrl = require('./utils').makeBadgeClassUrl
 const extend = require('xtend')
 const async = require('async')
@@ -108,6 +111,8 @@ function instanceToHookData(badge, instance, comment) {
     badge: badge.toResponse(),
     email: instance.email,
     assertionUrl: instance.assertionUrl,
+    // OB 3.0 (Task 7): additive, next to assertionUrl.
+    credentialUrl: instance.credentialUrl,
     issuedOn: unixtimeFromDate(instance.issuedOn),
     comment: comment
   }
@@ -570,6 +575,116 @@ exports = module.exports = function applyBadgeRoutes (server) {
       issuedOn: unixtimeFromDate(instance.issuedOn),
       expires: unixtimeFromDate(instance.expires),
     }
+  }
+
+  // OB 3.0 (Task 7): baseUrl for signed credentials — env PUBLIC_BASE_URL if
+  // set (no trailing slash expected, but tolerated/stripped), else the same
+  // req.resolvePath('/') pattern used everywhere else in this file, with any
+  // trailing slash stripped (app/lib/ob3.js expects no trailing slash).
+  function getBaseUrl(req) {
+    const configured = process.env.PUBLIC_BASE_URL
+    const base = configured || req.resolvePath('/')
+    return base.replace(/\/+$/, '')
+  }
+
+  function resolveImageUrl(badge, req) {
+    if (!badge.image) return undefined
+    var imageUrl = badge.image.toUrl()
+    if (!/^http/.test(imageUrl))
+      imageUrl = req.resolvePath(imageUrl)
+    return imageUrl
+  }
+
+  // Assembles the `badge` shape app/lib/ob3.js#buildCredential() expects —
+  // same absolute BadgeClass URL makeAssertion() computes today
+  // (req.resolvePath(makeBadgeClassUrl(badge))) plus the other already-
+  // resolved absolute fields it documents needing.
+  function makeBadgeForCredential(badge, req) {
+    return {
+      name: badge.name,
+      consumerDescription: badge.consumerDescription,
+      url: req.resolvePath(makeBadgeClassUrl(badge)),
+      criteriaUrl: badge.criteriaUrl,
+      criteria: badge.criteria || [],
+      alignments: badge.alignments || [],
+      imageUrl: resolveImageUrl(badge, req),
+    }
+  }
+
+  const SIGNING_NOT_CONFIGURED = {
+    code: 'SigningNotConfigured',
+    message: 'ISSUER_SIGNING_KEY / ISSUER_DID not set',
+  }
+  const CREDENTIAL_CONTENT_TYPE = 'application/vc+ld+json'
+
+  server.get('/public/credentials/status/0', getStatusListCredential)
+  function getStatusListCredential(req, res, next) {
+    if (!issuerKey.isConfigured()) {
+      res.send(503, SIGNING_NOT_CONFIGURED)
+      return next()
+    }
+
+    const baseUrl = getBaseUrl(req)
+    ob3Signer.getStatusListCredential(baseUrl).then(function (signed) {
+      res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
+      res.end(JSON.stringify(signed))
+      return next()
+    }).catch(function (err) {
+      log.error(err, 'error building OB3 status list credential')
+      return next(err)
+    })
+  }
+
+  server.get('/public/credentials/:instanceSlug', getCredential)
+  function getCredential(req, res, next) {
+    if (!issuerKey.isConfigured()) {
+      res.send(503, SIGNING_NOT_CONFIGURED)
+      return next()
+    }
+
+    const instanceSlug = req.params.instanceSlug
+    BadgeInstances.getOne({slug: instanceSlug}).then(function (instance) {
+      if (!instance)
+        return Promise.reject(errorHelper.notFound('Could not find badge instance'))
+
+      // Byte-stable persistence: once signed, ALWAYS serve the exact stored
+      // string back, verbatim — never re-serialize the parsed object (key
+      // order/whitespace could differ from run to run of JSON.stringify on a
+      // freshly-built object, even if logically equivalent).
+      if (instance.credential) {
+        res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
+        res.end(instance.credential)
+        next()
+        return null
+      }
+
+      // Lazy sign: instances created before signing existed (or before this
+      // credential was ever requested) have `credential IS NULL`.
+      return Badges.getOne({id: instance.badgeId}, {relationships: true}).then(function (badge) {
+        const baseUrl = getBaseUrl(req)
+        const issuerOrg = makeIssuerOrganization(badge.program, badge.issuer, badge.system)
+        const badgeForCredential = makeBadgeForCredential(badge, req)
+        const unsigned = ob3.buildCredential({
+          instance: instance,
+          badge: badgeForCredential,
+          issuerOrg: issuerOrg,
+          baseUrl: baseUrl,
+          issuerDid: issuerKey.getDid(),
+        })
+        return ob3Signer.signCredential(unsigned)
+      }).then(function (signed) {
+        const serialized = JSON.stringify(signed)
+        return BadgeInstances.update({credential: serialized}, {id: instance.id}).then(function () {
+          res.setHeader('Content-Type', CREDENTIAL_CONTENT_TYPE)
+          res.end(serialized)
+          return next()
+        })
+      })
+    }).catch(function (err) {
+      if (!err.restCode)
+        log.error(err, 'error building/serving OB3 credential')
+      return next(err)
+    })
   }
 
   server.get(publicPrefix.system +'/badges/:badgeSlug',
