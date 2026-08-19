@@ -38,6 +38,14 @@ const package = require('../package')
 // stored/signed string, for byte-stability), but it's still what runs for
 // any `res.send()` path through these routes (503/404/500 error bodies) when
 // the client asked for one of these types.
+//
+// F1 (final whole-plan review): the same 406-before-routing problem applies
+// to `application/did+json` — the media type a DID resolver actually sends
+// as its `Accept` header when it dereferences `did:web:...`, per the did:web
+// method spec. Without registering it here, every spec-correct resolver gets
+// a 406 before `/.well-known/did.json`'s handler ever runs. Same formatter
+// body (`formatVcLdJson` is generic — it just JSON.stringifies whatever body
+// it's given), registered under this additional type.
 function formatVcLdJson(req, res, body) {
   var data = 'null'
   if (body !== undefined) {
@@ -58,6 +66,7 @@ const server = restify.createServer({
   formatters: {
     'application/vc+ld+json': formatVcLdJson,
     'application/ld+json': formatVcLdJson,
+    'application/did+json': formatVcLdJson,
   },
 });
 
@@ -76,7 +85,14 @@ server.get('/.well-known/did.json', function (req, res, next) {
     return next()
   }
   issuerKey.getDidDocument().then(function (doc) {
-    res.send(200, doc)
+    // F1: served with the did:web method's own media type, not whatever
+    // `res.send()`'s content-negotiation would otherwise pick from the
+    // request's Accept header — a DID document is application/did+json
+    // regardless of what a particular caller asked for (mirrors the
+    // credential routes in app/routes/badge-instances.js, which likewise
+    // hand-set Content-Type rather than rely on negotiation).
+    res.setHeader('Content-Type', 'application/did+json')
+    res.end(JSON.stringify(doc))
     return next()
   }).catch(function (err) {
     // req.error(message) (the codebase convention, see e.g.

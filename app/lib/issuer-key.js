@@ -63,6 +63,32 @@ function getDid () {
   return process.env.ISSUER_DID
 }
 
+// F3 (final whole-plan review): a did:web identifier encodes the host (and
+// optional port) it resolves against directly in the identifier itself —
+// "did:web:example.com" resolves to https://example.com/.well-known/did.json,
+// "did:web:localhost%3A8080" (colon percent-encoded, per the did:web method
+// spec) resolves to http://localhost:8080/.well-known/did.json. Everything
+// this service signs asserts `issuer.id` = ISSUER_DID, so if that host
+// doesn't agree with PUBLIC_BASE_URL (the host baked into every credential
+// `id`/`achievement.id`/etc.), credentials get signed whose issuer identity
+// and content host silently diverge — permanently, since credentials are
+// immutable once issued. Extracts just the host[:port] segment: everything
+// between "did:web:" and the next unencoded ':' (later colon-delimited
+// segments are did:web PATH components, not part of the host) with %XX
+// percent-encoding decoded back to literal characters.
+function getDidHost () {
+  var did = getDid()
+  if (typeof did !== 'string' || did.indexOf('did:web:') !== 0) return null
+  var rest = did.slice('did:web:'.length)
+  var hostSegment = rest.split(':')[0]
+  if (!hostSegment) return null
+  try {
+    return decodeURIComponent(hostSegment)
+  } catch (e) {
+    return null
+  }
+}
+
 var keyPairPromise = null
 
 function getKeyPair () {
@@ -119,6 +145,7 @@ function getDidDocument () {
 module.exports = {
   isConfigured: isConfigured,
   getDid: getDid,
+  getDidHost: getDidHost,
   getKeyPair: getKeyPair,
   getDidDocument: getDidDocument,
 }

@@ -63,6 +63,22 @@ BadgeInstances.toResponse = function toResponse(row, req) {
   }
 };
 
+// Post-final-review fix: bounds the OB3 status-list `:shard` route param
+// against real data (app/routes/badge-instances.js) rather than trusting an
+// unauthenticated caller's URL — see that route's comment for why. A single
+// indexed `MAX(id)` query is cheap at this scale and is NOT cached: it runs
+// once per status-list request, same as any other per-request DB read this
+// codebase already does.
+BadgeInstances.getMaxId = function getMaxId() {
+  return new Promise(function (resolve, reject) {
+    db.query('SELECT MAX(`id`) AS `maxId` FROM `badgeInstances`', function (err, rows) {
+      if (err) return reject(err)
+      const maxId = rows && rows[0] && rows[0].maxId
+      resolve(maxId || 0)
+    })
+  })
+}
+
 BadgeInstances.validateRow = makeValidator({
   id: optional('isInt'),
   email: required('isEmail'),

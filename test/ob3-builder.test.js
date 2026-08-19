@@ -113,7 +113,7 @@ test('ob3.buildCredential: identityHash is sha256$hex(email + salt), exactly', f
   t.end()
 })
 
-test('ob3.buildCredential: credentialStatus.statusListIndex is String(instance.id)', function (t) {
+test('ob3.buildCredential: credentialStatus.statusListIndex is String(instance.id) for a shard-0 id', function (t) {
   const instance = baseInstance()
   instance.id = 42
   const credential = build({ instance: instance })
@@ -122,6 +122,41 @@ test('ob3.buildCredential: credentialStatus.statusListIndex is String(instance.i
   t.equal(credential.credentialStatus.statusPurpose, 'revocation')
   t.equal(credential.credentialStatus.id, BASE_URL + '/public/credentials/status/0#42')
   t.equal(credential.credentialStatus.statusListCredential, BASE_URL + '/public/credentials/status/0')
+  t.end()
+})
+
+// F2 (final whole-plan review): the status list is fixed at 131,072 entries
+// (global-constraints.md) — instance ids at or beyond that ceiling must
+// shard into a new status list credential rather than sign an out-of-range
+// bit index into an immutable credential. Shard math: shard = floor(id /
+// 131072), index within that shard = id % 131072.
+test('ob3.buildCredential: F2 — instance ids >= 131072 shard into a new status list (id 131073 -> shard 1, index "1")', function (t) {
+  const instance = baseInstance()
+  instance.id = 131073
+  const credential = build({ instance: instance })
+  t.equal(credential.credentialStatus.statusListIndex, '1', 'index wraps to id % 131072')
+  t.equal(credential.credentialStatus.statusListCredential, BASE_URL + '/public/credentials/status/1',
+    'statusListCredential points at shard 1')
+  t.equal(credential.credentialStatus.id, BASE_URL + '/public/credentials/status/1#131073',
+    'credentialStatus.id is built from the sharded statusListCredential URL')
+  t.end()
+})
+
+test('ob3.buildCredential: F2 — the last id in shard 0 (131071) still resolves to shard 0', function (t) {
+  const instance = baseInstance()
+  instance.id = 131071
+  const credential = build({ instance: instance })
+  t.equal(credential.credentialStatus.statusListIndex, '131071')
+  t.equal(credential.credentialStatus.statusListCredential, BASE_URL + '/public/credentials/status/0')
+  t.end()
+})
+
+test('ob3.buildCredential: F2 — the first id in shard 1 (131072) resolves to shard 1, index 0', function (t) {
+  const instance = baseInstance()
+  instance.id = 131072
+  const credential = build({ instance: instance })
+  t.equal(credential.credentialStatus.statusListIndex, '0')
+  t.equal(credential.credentialStatus.statusListCredential, BASE_URL + '/public/credentials/status/1')
   t.end()
 })
 

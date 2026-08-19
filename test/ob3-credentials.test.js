@@ -25,6 +25,7 @@ const spawn = require('./spawn')
 const startWebhookServer = require('./test-webhook-server')
 const BadgeInstances = require('../app/models/badge-instance')
 const makeDocumentLoader = require('../app/lib/document-loader')
+const logger = require('../app/lib/logger')
 
 const ajv = new Ajv2019({ strict: false })
 addFormats(ajv)
@@ -130,6 +131,41 @@ spawn(app).then(function (api) {
     t.end()
   })
 
+  // F3 (final whole-plan review): a coherence guard between ISSUER_DID and
+  // PUBLIC_BASE_URL — both are "configured" here (each passes its own
+  // isConfigured()/getConfiguredBaseUrl() check individually), but they name
+  // DIFFERENT hosts, which must still 503 rather than silently sign
+  // credentials whose issuer identity (did:web host) and content host
+  // (PUBLIC_BASE_URL) permanently diverge.
+  test('ob3-credentials: F3 — ISSUER_DID / PUBLIC_BASE_URL host mismatch -> 503 SigningNotConfigured naming both', function (t) {
+    const mismatchedDid = 'did:web:not-the-same-host.example.org'
+    const originalDid = process.env.ISSUER_DID
+    const originalSigningKey = process.env.ISSUER_SIGNING_KEY
+
+    generateTestSigningKey(mismatchedDid).then(function (exported) {
+      process.env.ISSUER_DID = mismatchedDid
+      process.env.ISSUER_SIGNING_KEY = exported.secretKeyMultibase
+      return api.get('/public/credentials/whatevs')
+    }).then(function (res) {
+      t.same(res.statusCode, 503, 'credential route: 503 on host mismatch')
+      t.same(res.body.code, 'SigningNotConfigured')
+      t.match(res.body.message, /not-the-same-host\.example\.org/, 'message names the ISSUER_DID host')
+      t.match(res.body.message, /localhost:8080/, 'message names the PUBLIC_BASE_URL host')
+      return api.get('/public/credentials/status/0')
+    }).then(function (res) {
+      t.same(res.statusCode, 503, 'status list route: 503 on host mismatch too')
+      t.same(res.body.code, 'SigningNotConfigured')
+      t.match(res.body.message, /not-the-same-host\.example\.org/, 'message names the ISSUER_DID host')
+      t.match(res.body.message, /localhost:8080/, 'message names the PUBLIC_BASE_URL host')
+
+      // Restore coherence — ISSUER_DID and PUBLIC_BASE_URL must agree again
+      // for the rest of this file.
+      process.env.ISSUER_DID = originalDid
+      process.env.ISSUER_SIGNING_KEY = originalSigningKey
+      t.end()
+    }).catch(t.threw)
+  })
+
   test('ob3-credentials: CRITICAL FIX regression — a spoofed Host header never ends up baked into the signed credential', function (t) {
     const email = 'brian-ob3-host-spoof@example.org'
     var slug
@@ -156,9 +192,11 @@ spawn(app).then(function (api) {
   test('ob3-credentials: GET /public/credentials/:slug — signs (lazy), verifies, is byte-stable, schema-valid', function (t) {
     const credentialUrl = api.makeUrl('/public/credentials/whatevs')
     var firstRawBody
+    var instanceId
 
     BadgeInstances.getOne({ slug: 'whatevs' }).then(function (before) {
       t.same(before.credential, null, 'starts unsigned (NULL credential column), per test-data.sql')
+      instanceId = before.id
       return rawGet(credentialUrl)
     }).then(function (first) {
       t.same(first.statusCode, 200, '200 on first GET (lazy sign)')
@@ -181,6 +219,21 @@ spawn(app).then(function (api) {
       }, 'credentialSchema[0] carries the scoped inline @context that fixes the relative-@type safe-mode failure')
       t.same(credential.id, PUBLIC_BASE_URL + '/public/credentials/whatevs',
         'credential.id matches the PUBLIC_BASE_URL-derived URL (not the actual request URL/port)')
+
+      // F2 (final whole-plan review): the shard/index are COMPUTED from the
+      // instance's real id, not hardcoded — this instance's id is < 131072
+      // (test fixtures never approach the ceiling), so it lands in shard 0,
+      // but the assertion is built from `instanceId`, not a literal '0', so
+      // it would actually catch a regression to the pre-sharding hardcoded
+      // `/status/0` behavior just as well as it confirms today's value.
+      const expectedShard = Math.floor(instanceId / 131072)
+      const expectedIndex = String(instanceId % 131072)
+      const expectedStatusListCredential = PUBLIC_BASE_URL + '/public/credentials/status/' + expectedShard
+      t.same(credential.credentialStatus.statusListCredential, expectedStatusListCredential,
+        'credentialStatus.statusListCredential is derived from the instance id\'s shard')
+      t.same(credential.credentialStatus.statusListIndex, expectedIndex,
+        'credentialStatus.statusListIndex is instanceId % 131072, not the raw id')
+      t.same(credential.credentialStatus.id, expectedStatusListCredential + '#' + instanceId)
 
       t.ok(credential.proof, 'has a proof')
       t.same(credential.proof.cryptosuite, 'eddsa-rdfc-2022')
@@ -266,6 +319,50 @@ spawn(app).then(function (api) {
     }).catch(t.threw)
   })
 
+  // F2 (final whole-plan review): the shard route parameter must be a
+  // canonical non-negative integer. Anything else (non-numeric, negative,
+  // leading zeros) can never correspond to a real shard, so it 404s — this
+  // must hold true regardless of whether signing is otherwise configured,
+  // since it's a structural property of the URL, not a configuration state.
+  test('ob3-credentials: F2 — invalid status list shard params 404 (not 503, not 200)', function (t) {
+    Promise.all([
+      api.get('/public/credentials/status/abc'),
+      api.get('/public/credentials/status/-1'),
+      api.get('/public/credentials/status/007'),
+      api.get('/public/credentials/status/1.5'),
+    ]).then(function (results) {
+      results.forEach(function (res, i) {
+        t.same(res.statusCode, 404, 'invalid shard #' + i + ' -> 404')
+      })
+      t.end()
+    }).catch(api.fail(t))
+  })
+
+  // Post-final-review fix: a WELL-FORMED shard (passes SHARD_PARAM_PATTERN)
+  // must still 404 once it's beyond what real data could ever justify —
+  // otherwise any anonymous caller could force an unbounded number of fresh
+  // Ed25519 signs and forever-retained ob3-signer.js Map entries just by
+  // incrementing a URL segment (no auth required on /public/ routes at all).
+  // This test file's fixture ids are all tiny, so maxShard is 0 throughout —
+  // shard 1 is a well-formed but nonexistent shard here, and must 404 both
+  // times it's requested (not sign-then-serve on some later attempt, and
+  // not fail once then succeed from a stale memo).
+  test('ob3-credentials: F2 (post-review) — a well-formed shard beyond real data 404s, every time, never signs', function (t) {
+    const beyondUrl = api.makeUrl('/public/credentials/status/1')
+
+    api.get('/public/credentials/status/1').then(function (first) {
+      t.same(first.statusCode, 404, 'shard 1 is well-formed but no instance id justifies it yet -> 404')
+      return rawGet(beyondUrl)
+    }).then(function (second) {
+      t.same(second.statusCode, 404, 'requesting it again still 404s — no memo entry was created for it')
+      // Shard 0 must remain unaffected by an out-of-bounds sibling request.
+      return api.get('/public/credentials/status/0')
+    }).then(function (stillFine) {
+      t.same(stillFine.statusCode, 200, 'shard 0 (the only shard real data justifies) is still servable')
+      t.end()
+    }).catch(api.fail(t))
+  })
+
   test('ob3-credentials: I5 — Accept: application/vc+ld+json is acceptable, not a 406', function (t) {
     Promise.all([
       rawGet(api.makeUrl('/public/credentials/whatevs'), { Accept: 'application/vc+ld+json' }),
@@ -347,6 +444,78 @@ spawn(app).then(function (api) {
       t.same(res.statusCode, 404, 'credential 404s once the instance is gone')
       t.end()
     }).catch(api.fail(t))
+  })
+
+  // F3 (final whole-plan review): a credential SIGNED under an old
+  // PUBLIC_BASE_URL/ISSUER_DID pair (before a domain move) must still be
+  // served byte-stably under the new one — never silently re-signed/rewritten
+  // — but a warning should be logged so the mismatch doesn't go unnoticed.
+  // Simulates a domain move: signs an instance under an "old" (but
+  // internally-coherent) base URL/DID pair, then switches back to this
+  // file's standard PUBLIC_BASE_URL/ISSUER_DID and re-fetches the SAME
+  // credential, asserting: still 200, still byte-identical (not re-signed),
+  // and a req.log.warn() call happened naming the stale id.
+  test('ob3-credentials: F3 — GET of a credential stored under an old PUBLIC_BASE_URL still 200s byte-stably, and logs a warning', function (t) {
+    const oldBaseUrl = 'http://old-domain.example.org'
+    const oldDid = 'did:web:old-domain.example.org'
+    const email = 'brian-ob3-old-base@example.org'
+    const originalBaseUrl = process.env.PUBLIC_BASE_URL
+    const originalDid = process.env.ISSUER_DID
+    const originalSigningKey = process.env.ISSUER_SIGNING_KEY
+    var slug
+    var oldRawBody
+
+    generateTestSigningKey(oldDid).then(function (exported) {
+      // Sign under the "old" domain — internally coherent (oldDid's host
+      // matches oldBaseUrl's host), just different from what the rest of
+      // this file uses.
+      process.env.PUBLIC_BASE_URL = oldBaseUrl
+      process.env.ISSUER_DID = oldDid
+      process.env.ISSUER_SIGNING_KEY = exported.secretKeyMultibase
+
+      return api.post('/systems/chicago/badges/chicago-badge/instances', { email: email })
+    }).then(function (res) {
+      t.same(res.statusCode, 201)
+      slug = res.body.instance.slug
+      return rawGet(api.makeUrl('/public/credentials/' + slug))
+    }).then(function (first) {
+      t.same(first.statusCode, 200, 'signs fine under the old base URL')
+      oldRawBody = first.body
+      t.match(JSON.parse(oldRawBody).id, /^http:\/\/old-domain\.example\.org\//,
+        'credential.id is baked with the OLD base URL')
+
+      // "Domain move": restore the standard, coherent PUBLIC_BASE_URL/
+      // ISSUER_DID pair used by the rest of this file.
+      process.env.PUBLIC_BASE_URL = originalBaseUrl
+      process.env.ISSUER_DID = originalDid
+      process.env.ISSUER_SIGNING_KEY = originalSigningKey
+
+      var warnCalls = []
+      var originalWarn = logger.warn
+      logger.warn = function () {
+        warnCalls.push(Array.prototype.slice.call(arguments))
+        return originalWarn.apply(logger, arguments)
+      }
+
+      return rawGet(api.makeUrl('/public/credentials/' + slug)).then(function (second) {
+        logger.warn = originalWarn
+        return { second: second, warnCalls: warnCalls }
+      })
+    }).then(function (result) {
+      const second = result.second
+      t.same(second.statusCode, 200, 'still 200 under the NEW base URL — served, not rejected')
+      t.same(second.body, oldRawBody, 'byte-identical to what was stored — NOT re-signed under the new base URL')
+
+      const warned = result.warnCalls.some(function (args) {
+        return args.some(function (arg) {
+          return typeof arg === 'string' && arg.indexOf('old-domain.example.org') !== -1
+        }) || args.some(function (arg) {
+          return arg && typeof arg === 'object' && JSON.stringify(arg).indexOf('old-domain.example.org') !== -1
+        })
+      })
+      t.ok(warned, 'req.log.warn() was called naming the stale (old-base) credential id')
+      t.end()
+    }).catch(t.threw)
   })
 
   test(':cleanup:', function (t) {
