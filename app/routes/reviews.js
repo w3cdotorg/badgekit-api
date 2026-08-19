@@ -7,7 +7,6 @@ const Webhooks = require('../models/webhook');
 const errorHelper = require('../lib/error-helper')
 const middleware = require('../lib/middleware')
 const hash = require('../lib/hash').hash
-const request = require('request')
 const log = require('../lib/logger')
 const sendPaginated = require('../lib/send-paginated');
 const _ = require('underscore');
