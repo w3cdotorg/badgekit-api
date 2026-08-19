@@ -55,6 +55,14 @@ const legacyValidators = {
   is: function (value, pattern) {
     return validatorContext.matches(value, pattern);
   },
+  // validator >= 7 tightened isDate() to ISO-ish formats by default, but this
+  // API has always accepted whatever `Date.parse` understands (e.g.
+  // "March 9, 1979 12:00:00"), matching the pre-3.0 `validator` behavior this
+  // app was built against. Keep that looser contract instead of silently
+  // rejecting previously-valid application/badge-instance payloads.
+  isDate: function (value) {
+    return !isNaN(Date.parse(value));
+  },
 }
 
 function confirmValidatorFunction (fn) {
