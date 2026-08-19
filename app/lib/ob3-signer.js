@@ -94,14 +94,47 @@ const SCHEMA_VALIDATOR_TYPE_CONTEXT = {
 // Deep-clones the unsigned credential (so app/lib/ob3.js's return value is
 // never mutated) and scopes SCHEMA_VALIDATOR_TYPE_CONTEXT onto any
 // `credentialSchema` entry using the untermed 1EdTech type string.
+//
+// If such an entry already carries its own `@context` (not produced by
+// app/lib/ob3.js today, but a future caller/shape could), we never silently
+// skip fixing it — a silent skip would leave the exact safe-mode
+// "relative @type reference" failure this function exists to prevent. We
+// either MERGE our term into an existing plain-object context (as long as it
+// doesn't already map that term to something else), or throw loudly so a
+// real conflict surfaces at signing time instead of failing (or worse,
+// silently producing an unverifiable-elsewhere document).
 function prepareForSigning (unsignedCredential) {
   const credential = JSON.parse(JSON.stringify(unsignedCredential))
   const raw = credential.credentialSchema
   const schemas = Array.isArray(raw) ? raw : (raw ? [raw] : [])
   schemas.forEach(function (entry) {
-    if (entry && entry.type === SCHEMA_VALIDATOR_TYPE && !entry['@context']) {
+    if (!entry || entry.type !== SCHEMA_VALIDATOR_TYPE) return
+
+    const existing = entry['@context']
+    if (!existing) {
       entry['@context'] = SCHEMA_VALIDATOR_TYPE_CONTEXT
+      return
     }
+
+    if (typeof existing !== 'object' || Array.isArray(existing)) {
+      throw new Error(
+        'ob3-signer#prepareForSigning: credentialSchema entry already has a ' +
+        'non-object `@context` (' + JSON.stringify(existing) + ') — cannot ' +
+        'merge the `' + SCHEMA_VALIDATOR_TYPE + '` scoped term into it.'
+      )
+    }
+
+    const wanted = SCHEMA_VALIDATOR_TYPE_CONTEXT[SCHEMA_VALIDATOR_TYPE]
+    const current = existing[SCHEMA_VALIDATOR_TYPE]
+    if (current && current !== wanted) {
+      throw new Error(
+        'ob3-signer#prepareForSigning: credentialSchema entry\'s `@context` ' +
+        'already maps `' + SCHEMA_VALIDATOR_TYPE + '` to `' + current + '`, ' +
+        'which conflicts with `' + wanted + '`.'
+      )
+    }
+
+    entry['@context'] = Object.assign({}, existing, SCHEMA_VALIDATOR_TYPE_CONTEXT)
   })
   return credential
 }
@@ -177,17 +210,26 @@ function buildStatusListCredential (baseUrl) {
 }
 
 // getStatusListCredential(baseUrl) -> Promise<signed>
-// Built and signed once per process, then memoized — the status list is
-// static (all-zero; see app/lib/ob3.js and global-constraints.md, no
-// revocation UI/API exists yet) so there is nothing to invalidate the cache
-// for the lifetime of the process.
-let statusListCredentialPromise = null
+// Built and signed once per process PER baseUrl, then memoized — keyed by
+// baseUrl (not a single slot) because the credential's own `id` and its
+// `credentialSubject.id` are derived from baseUrl; a bare single-slot memo
+// would silently keep serving a credential whose `id`/`statusListCredential`
+// pairing (which strict verifiers check for equality — spec's Bitstring
+// Status List retrieval algorithm) belongs to a stale baseUrl. In practice
+// baseUrl is now always exactly `PUBLIC_BASE_URL` (see
+// app/routes/badge-instances.js — required whenever signing is configured),
+// so this Map holds at most one entry in real deployments; it stays
+// baseUrl-keyed anyway so a misconfiguration can't wire up cross-baseUrl
+// contamination silently, and so tests that vary baseUrl per spawn() get
+// correctly independent, non-stale credentials.
+const statusListCredentialPromises = new Map()
 function getStatusListCredential (baseUrl) {
-  if (!statusListCredentialPromise) {
-    statusListCredentialPromise = signCredential(buildStatusListCredential(baseUrl))
-    statusListCredentialPromise.catch(function () { statusListCredentialPromise = null })
+  if (!statusListCredentialPromises.has(baseUrl)) {
+    const promise = signCredential(buildStatusListCredential(baseUrl))
+    promise.catch(function () { statusListCredentialPromises.delete(baseUrl) })
+    statusListCredentialPromises.set(baseUrl, promise)
   }
-  return statusListCredentialPromise
+  return statusListCredentialPromises.get(baseUrl)
 }
 
 module.exports = {

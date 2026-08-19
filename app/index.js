@@ -21,10 +21,44 @@ const middleware = require('./lib/middleware')
 const issuerKey = require('./lib/issuer-key')
 const package = require('../package')
 
+// I5 (Task 7 review): `application/vc+ld+json` (and the more generic
+// `application/ld+json`) must be registered restify formatters, not just
+// Content-Types we happen to set by hand with res.setHeader()/res.end() in
+// app/routes/badge-instances.js's credential routes. restify's global
+// `restify.plugins.acceptParser(server.acceptable)` (below) rejects any
+// request whose `Accept` header doesn't match a KNOWN type with a 406
+// NotAcceptableError before routing even happens — a real, spec-correct
+// client requesting `Accept: application/vc+ld+json` (the exact content type
+// these credentials are served as) would be rejected outright. Registering
+// formatters here adds both types to `server.acceptable` (see
+// restify's `mergeFormatters()`) so the accept-parser middleware allows them
+// through. The formatter body itself mirrors restify's built-in JSON
+// formatter (node_modules/restify/lib/formatters/json.js) — our credential
+// routes bypass it entirely for the 200 case (res.end() with the exact
+// stored/signed string, for byte-stability), but it's still what runs for
+// any `res.send()` path through these routes (503/404/500 error bodies) when
+// the client asked for one of these types.
+function formatVcLdJson(req, res, body) {
+  var data = 'null'
+  if (body !== undefined) {
+    try {
+      data = JSON.stringify(body)
+    } catch (e) {
+      throw new restifyErrors.InternalServerError('could not format response body')
+    }
+  }
+  res.setHeader('Content-Length', Buffer.byteLength(data))
+  return data
+}
+
 const server = restify.createServer({
   name: package.name,
   version: package.version,
   log: logger,
+  formatters: {
+    'application/vc+ld+json': formatVcLdJson,
+    'application/ld+json': formatVcLdJson,
+  },
 });
 
 server.pre(restify.plugins.pre.sanitizePath());
