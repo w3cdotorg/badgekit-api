@@ -98,5 +98,5 @@ with a maintained MySQL client wrapper in a future pass.
   `makeBadgeClass()` also computed an absolute `imageUrl` but then
   returned the original unresolved relative one. Both are now fixed at
   the source; see the git history for the exact diff and the new test
-  assertion in `test/images.test.js` that pins the correct absolute
+  assertion in `test/badges.test.js` that pins the correct absolute
   `/public/images/:imageId` URL for a BLOB-backed badge class image.
